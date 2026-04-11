@@ -23,7 +23,7 @@ export class ProductUseCaseImpl implements ProductUseCase {
     }
 
     const newProduct = new Product(
-      undefined,
+      null,
       data.name,
       SKU.create(data.sku),
       data.unit,
@@ -32,8 +32,7 @@ export class ProductUseCaseImpl implements ProductUseCase {
       data.description || '',
     );
 
-    await this.productRepo.save(newProduct);
-    return newProduct;
+    return await this.productRepo.save(newProduct);
   }
 
   async getList(): Promise<Product[]> {

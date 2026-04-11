@@ -10,9 +10,10 @@ import { ProductEntity } from '../entities/product.orm-entity';
 export class ProductPostgresRepository implements ProductRepository {
   constructor(@InjectRepository(ProductEntity) private readonly repo: Repository<ProductEntity>) {}
 
-  async save(product: Product): Promise<void> {
+  async save(product: Product): Promise<Product> {
     const entity = ProductMapper.toPersistence(product);
-    await this.repo.save(entity);
+    const savedEntity = await this.repo.save(entity);
+    return ProductMapper.toDomain(savedEntity);
   }
 
   async findById(id: string): Promise<Product | null> {

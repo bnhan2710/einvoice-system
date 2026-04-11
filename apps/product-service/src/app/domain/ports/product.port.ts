@@ -7,7 +7,7 @@ export interface ProductUseCase {
 }
 
 export interface ProductRepository {
-  save(product: Product): Promise<void>;
+  save(product: Product): Promise<Product>;
   findById(id: string): Promise<Product | null>;
   findAll(): Promise<Product[]>;
   existsBySkuOrName(sku: string, name: string): Promise<boolean>;

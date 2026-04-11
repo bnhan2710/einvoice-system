@@ -2,7 +2,7 @@ import { SKU, Price } from '../value-objects';
 
 export class Product {
   constructor(
-    public readonly id: string,
+    public readonly id: string | null,
     public name: string,
     public sku: SKU,
     public unit: string,

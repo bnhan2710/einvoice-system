@@ -16,6 +16,7 @@ import { InvoiceKafkaPublisher } from './infrastructure/messaging/kafka/invoice-
 import { INVOICE_EVENT_PUBLISHER } from './invoice.di-tokens';
 import { SEND_INVOICE_SAGA_COORDINATOR } from './invoice.di-tokens';
 import { SendInvoiceSagaCoordinator } from './application/sagas/invoice-send-saga-coordinator';
+import { SagaOrchestrationModule } from '@common/saga-orchestration/saga-orchestration.module';
 
 const dependencies: Provider[] = [
   { provide: INVOICE_SERVICE, useClass: InvoiceService },
@@ -27,6 +28,7 @@ const dependencies: Provider[] = [
 @Module({
   imports: [
     MongoProvider,
+    SagaOrchestrationModule.forRoot(),
     MongooseModule.forFeature([InvoiceDestination]),
     ClientsModule.registerAsync([
       TcpProvider(TCP_SERVICES.PDF_GENERATOR_SERVICE),

@@ -22,5 +22,5 @@ export interface IInvoiceEventPublisher {
 }
 
 export interface ISagaCoordinator {
-  execute(invoiceId: string, processId: string);
+  execute(payload: InvoiceProcessPayload): Promise<void>;
 }

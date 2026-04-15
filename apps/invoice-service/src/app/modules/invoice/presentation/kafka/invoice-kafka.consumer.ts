@@ -14,7 +14,6 @@ export class InvoiceProcessKafkaConsumer {
 
   @MessagePattern(INVOICE_EVENTS.INVOICE_PROCESS_SEND_EVENT)
   async handleInvoiceProcess(@Payload() payload: InvoiceProcessPayload) {
-    const { invoiceId, processId } = payload;
-    await this.saga.execute(invoiceId, processId);
+    await this.saga.execute(payload);
   }
 }

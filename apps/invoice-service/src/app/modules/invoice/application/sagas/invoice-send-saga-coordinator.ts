@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { IInvoiceRepository, IInvoiceEventPublisher, ISagaCoordinator } from '../ports/invoice.port';
 import { INVOICE_EVENT_PUBLISHER, INVOICE_REPOSITORY } from '../../invoice.di-tokens';
 import { PAYMENT_SERVICE } from '../../../payment/payment.di-tokens';
@@ -12,112 +12,122 @@ import { TCP_REQUEST_MESSAGE } from '@common/constants/enum/tcp-request-message.
 import { UploadFileTcpReq } from '@common/interfaces/tcp/media';
 import { TcpClient } from '@common/interfaces/tcp/common/tcp-client.interface';
 import { map } from 'rxjs';
+import { SagaOrchestrationService } from '@common/saga-orchestration/application/saga-orchestration.service';
+import { INVOICE_SEND_SAGA_STEP, SAGA_TYPES } from '@common/constants/enum/saga/saga.enum';
+import { InvoiceSendSagaContext, SagaStep } from '@common/interfaces/saga';
+import { InvoiceProcessPayload } from '@common/interfaces/queue/invoice';
+import { ERROR_CODE } from '@common/constants/enum/error-code.enum';
 
 @Injectable()
 export class SendInvoiceSagaCoordinator implements ISagaCoordinator {
+  private readonly logger = new Logger(SendInvoiceSagaCoordinator.name);
+
   constructor(
     @Inject(INVOICE_REPOSITORY) private readonly invoiceRepository: IInvoiceRepository,
     @Inject(PAYMENT_SERVICE) private readonly paymentService: IPaymentService,
     @Inject(INVOICE_EVENT_PUBLISHER) private readonly invoiceEventPublisher: IInvoiceEventPublisher,
     @Inject(TCP_SERVICES.PDF_GENERATOR_SERVICE) private readonly pdfGeneratorClient: TcpClient,
     @Inject(TCP_SERVICES.MEDIA_SERVICE) private readonly mediaClient: TcpClient,
+    private readonly sagaOrchestration: SagaOrchestrationService,
   ) {}
 
-  //SAGA Pattern Implementation
-  //Step1: generate pdf
-  private async executePdfGenerationStep(invoice: Invoice, processId: string) {
-    const pdfBase64 = await this.generatorInvoicePdf(invoice, processId);
-    return pdfBase64;
-  }
-  //Step2: upload file
-  private async executeFileUploadStep(pdfBase64: string, invoice: Invoice, processId: string) {
-    const fileUrl = await this.uploadFile(
-      {
-        fileBase64: pdfBase64,
-        fileName: `invoice-${invoice._id}`,
-      },
-      processId,
-    );
-    return fileUrl;
-  }
-  //Step3: create payment link
-  private async executeCreatePaymentLinkStep(invoice: Invoice) {
-    const checkoutSession = await this.paymentService.createCheckoutSession(createSessionMapping(invoice));
-    return checkoutSession;
-  }
-
-  //complete saga
-  private async completeSaga(invoiceId: string, fileUrl: string, checkoutSession: { url: string }) {
-    try {
-      Logger.log('Payment Link:', checkoutSession.url);
-      await this.invoiceEventPublisher.publishInvoiceSentEvent({
-        id: invoiceId,
-        paymentLink: checkoutSession.url,
-      });
-
-      await this.invoiceRepository.updateById(invoiceId, {
-        status: INVOICE_STATUS.SENT,
-        fileUrl,
-      });
-    } catch (error) {
-      Logger.error('Failed to complete saga', error);
-      throw error;
-    }
-  }
-
-  // Main execution method
-  async execute(invoiceId: string, processId: string) {
+  async execute(payload: InvoiceProcessPayload): Promise<void> {
+    const { invoiceId, userId, processId } = payload;
     const invoice = await this.invoiceRepository.getById(invoiceId);
-    const compensationStack: Array<{ name: string; rollback: () => Promise<void> }> = [];
+
+    if (!invoice) {
+      throw new NotFoundException(ERROR_CODE.INVOICE_NOT_FOUND);
+    }
+
+    const context: InvoiceSendSagaContext = {
+      sagaId: '',
+      invoiceId,
+      userId,
+      processId,
+    };
+
+    const steps = this.buildSendInvoiceSteps(invoice);
 
     try {
-      const pdfBase64 = await this.executePdfGenerationStep(invoice, processId);
-      compensationStack.push({
-        name: 'GENERATE_PDF',
-        rollback: async () => {
-          // logic to delete the generated PDF if stored temporarily
-        },
+      await this.sagaOrchestration.execute(SAGA_TYPES.INVOICE_SEND, steps, context, {
+        transientContextKeys: ['pdfBase64'],
       });
-
-      const fileUrl = await this.executeFileUploadStep(pdfBase64, invoice, processId);
-      compensationStack.push({
-        name: 'UPLOAD_FILE',
-        rollback: async () => {
-          await this.deleteFile(fileUrl, processId);
-        },
-      });
-
-      const checkoutSession = await this.executeCreatePaymentLinkStep(invoice);
-
-      compensationStack.push({
-        name: 'CREATE_PAYMENT_LINK',
-        rollback: async () => {
-          await this.paymentService.cancelCheckoutSession(checkoutSession.id);
-        },
-      });
-
-      await this.completeSaga(invoiceId, fileUrl, checkoutSession);
     } catch (error) {
-      // rollback compensation step
-      await this.handleRollback(invoiceId, compensationStack);
+      await this.invoiceRepository.updateById(invoiceId, {
+        status: INVOICE_STATUS.FAILED,
+      });
       throw error;
     }
   }
 
-  private async handleRollback(invoiceId: string, stack: Array<{ name: string; rollback: () => Promise<void> }>) {
-    await this.invoiceRepository.updateById(invoiceId, {
-      status: INVOICE_STATUS.FAILED,
-    });
+  private buildSendInvoiceSteps(invoice: Invoice): SagaStep<InvoiceSendSagaContext>[] {
+    return [
+      {
+        name: INVOICE_SEND_SAGA_STEP.GENERATE_PDF,
+        execute: async (ctx) => {
+          const pdfBase64 = await this.generatorInvoicePdf(invoice, ctx.processId);
+          return { success: true, data: { pdfBase64 } };
+        },
+      },
+      {
+        name: INVOICE_SEND_SAGA_STEP.UPLOAD_FILE,
+        execute: async (ctx) => {
+          if (!ctx.pdfBase64) {
+            return { success: false, error: 'Missing pdfBase64' };
+          }
+          const fileUrl = await this.uploadFile(
+            {
+              fileBase64: ctx.pdfBase64,
+              fileName: `invoice-${invoice._id}`,
+            },
+            ctx.processId,
+          );
+          return { success: true, data: { fileUrl } };
+        },
+        compensate: async (ctx) => {
+          if (ctx.fileUrl) {
+            await this.deleteFile(ctx.fileUrl, ctx.processId);
+          }
+        },
+      },
+      {
+        name: INVOICE_SEND_SAGA_STEP.CREATE_PAYMENT_LINK,
+        execute: async () => {
+          const checkoutSession = await this.paymentService.createCheckoutSession(createSessionMapping(invoice));
+          return {
+            success: true,
+            data: {
+              paymentLink: checkoutSession.url,
+              sessionId: checkoutSession.sessionId,
+            },
+          };
+        },
+        compensate: async (ctx) => {
+          if (ctx.sessionId) {
+            await this.paymentService.cancelCheckoutSession(ctx.sessionId);
+          }
+        },
+      },
+      {
+        name: INVOICE_SEND_SAGA_STEP.FINALIZE_SEND,
+        execute: async (ctx) => {
+          if (!ctx.paymentLink || !ctx.fileUrl) {
+            return { success: false, error: 'Missing payment link or file URL' };
+          }
+          this.logger.log(`Payment link: ${ctx.paymentLink}`);
+          await this.invoiceEventPublisher.publishInvoiceSentEvent({
+            id: ctx.invoiceId,
+            paymentLink: ctx.paymentLink,
+          });
 
-    while (stack.length > 0) {
-      const step = stack.pop();
-      try {
-        await step.rollback();
-        console.log(`Compensating step: ${step.name}`);
-      } catch (error) {
-        Logger.error(`Rollback failed for step: ${step.name}`, error);
-      }
-    }
+          await this.invoiceRepository.updateById(ctx.invoiceId, {
+            status: INVOICE_STATUS.SENT,
+            fileUrl: ctx.fileUrl,
+          });
+          return { success: true };
+        },
+      },
+    ];
   }
 
   async generatorInvoicePdf(data: Invoice, processId: string) {

@@ -15,7 +15,7 @@ export class SagaOrchestrationMongoRepo implements SagaOrchestrationRepository {
   async create(sagaType: SAGA_TYPES, context: Record<string, any>, stepNames: string[]) {
     const steps = stepNames.map((name) => ({
       stepName: name,
-      status: SAGA_STATUS.PENDING,
+      status: SAGA_STEP_STATUS.PENDING,
     }));
     const sagaInstance = new this.sagaInstanceModel({
       sagaType,
@@ -31,8 +31,11 @@ export class SagaOrchestrationMongoRepo implements SagaOrchestrationRepository {
     return this.sagaInstanceModel.findById(id).exec();
   }
 
-  async updateStatus(id: string, status: SAGA_STATUS) {
+  async updateStatus(id: string, status: SAGA_STATUS, error?: string) {
     const update: Partial<SagaInstance> = { status };
+    if (error !== undefined) {
+      update.error = error;
+    }
 
     return this.sagaInstanceModel.findByIdAndUpdate(id, update, { new: true }).exec();
   }
@@ -49,7 +52,10 @@ export class SagaOrchestrationMongoRepo implements SagaOrchestrationRepository {
     return this.sagaInstanceModel
       .findByIdAndUpdate(
         id,
-        { [`steps.${stepIndex}.status`]: SAGA_STATUS.RUNNING, [`steps.${stepIndex}.startedAt`]: new Date() },
+        {
+          [`steps.${stepIndex}.status`]: SAGA_STEP_STATUS.RUNNING,
+          [`steps.${stepIndex}.startedAt`]: new Date(),
+        },
         { new: true },
       )
       .exec();
@@ -60,7 +66,7 @@ export class SagaOrchestrationMongoRepo implements SagaOrchestrationRepository {
       .findByIdAndUpdate(
         id,
         {
-          [`steps.${stepIndex}.status`]: SAGA_STATUS.COMPLETED,
+          [`steps.${stepIndex}.status`]: SAGA_STEP_STATUS.COMPLETED,
           [`steps.${stepIndex}.completedAt`]: new Date(),
           [`steps.${stepIndex}.data`]: data || null,
         },
@@ -74,7 +80,7 @@ export class SagaOrchestrationMongoRepo implements SagaOrchestrationRepository {
       .findByIdAndUpdate(
         id,
         {
-          [`steps.${stepIndex}.status`]: SAGA_STATUS.FAILED,
+          [`steps.${stepIndex}.status`]: SAGA_STEP_STATUS.FAILED,
           [`steps.${stepIndex}.completedAt`]: new Date(),
           [`steps.${stepIndex}.error`]: error,
         },
@@ -88,7 +94,7 @@ export class SagaOrchestrationMongoRepo implements SagaOrchestrationRepository {
       .findByIdAndUpdate(
         id,
         {
-          [`steps.${stepIndex}.status`]: SAGA_STATUS.COMPENSATED,
+          [`steps.${stepIndex}.status`]: SAGA_STEP_STATUS.COMPENSATED,
           [`steps.${stepIndex}.completedAt`]: new Date(),
         },
         { new: true },

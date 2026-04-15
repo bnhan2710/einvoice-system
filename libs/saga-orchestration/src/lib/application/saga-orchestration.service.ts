@@ -17,17 +17,19 @@ export class SagaOrchestrationService {
     sagaType: SAGA_TYPES,
     steps: SagaStep<TContext>[],
     context: TContext,
+    options?: { transientContextKeys?: string[] },
   ): Promise<SagaInstance | null> {
+    const transientKeys = options?.transientContextKeys ?? [];
     const stepNames = steps.map((s) => s.name);
 
     // Create saga instance
-    const saga = await this.repository.create(sagaType, context, stepNames);
+    const saga = await this.repository.create(sagaType, this.contextForPersistence(context, transientKeys), stepNames);
     this.logger.log(`Saga ${saga._id} created for type ${sagaType}`);
     const sagaId = saga._id.toString();
 
     // Update context with sagaId
     context.sagaId = sagaId;
-    await this.repository.updateContext(sagaId, context);
+    await this.repository.updateContext(sagaId, this.contextForPersistence(context, transientKeys));
 
     // Update status to RUNNING
     await this.repository.updateStatus(sagaId, SAGA_STATUS.RUNNING);
@@ -36,7 +38,7 @@ export class SagaOrchestrationService {
       // Execute steps sequentially
       for (let i = 0; i < steps.length; i++) {
         await this.repository.updateCurrentStep(sagaId, i);
-        await this.executeStep(sagaId, i, steps[i], context);
+        await this.executeStep(sagaId, i, steps[i], context, transientKeys);
       }
 
       // All steps completed successfully
@@ -56,11 +58,37 @@ export class SagaOrchestrationService {
     }
   }
 
+  private contextForPersistence<TContext extends SagaContext>(
+    context: TContext,
+    transientKeys: string[],
+  ): Record<string, any> {
+    const plain = { ...(context as Record<string, any>) };
+    for (const key of transientKeys) {
+      delete plain[key];
+    }
+    return plain;
+  }
+
+  private stripTransientFields(
+    data: Record<string, any> | undefined,
+    transientKeys: string[],
+  ): Record<string, any> | undefined {
+    if (!data || transientKeys.length === 0) {
+      return data;
+    }
+    const copy = { ...data };
+    for (const key of transientKeys) {
+      delete copy[key];
+    }
+    return copy;
+  }
+
   private async executeStep<TContext extends SagaContext>(
     sagaId: string,
     stepIndex: number,
     step: SagaStep<TContext>,
     context: TContext,
+    transientKeys: string[],
   ): Promise<void> {
     this.logger.log(`Executing step ${stepIndex}: ${step.name} for saga ${sagaId}`);
 
@@ -76,10 +104,11 @@ export class SagaOrchestrationService {
       // Update context with step result data
       if (result.data) {
         Object.assign(context, result.data);
-        await this.repository.updateContext(sagaId, context);
+        await this.repository.updateContext(sagaId, this.contextForPersistence(context, transientKeys));
       }
 
-      await this.repository.markStepCompleted(sagaId, stepIndex, result.data);
+      const persistedStepData = this.stripTransientFields(result.data as Record<string, any>, transientKeys);
+      await this.repository.markStepCompleted(sagaId, stepIndex, persistedStepData);
       this.logger.log(`Step ${stepIndex}: ${step.name} completed for saga ${sagaId}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

@@ -6,6 +6,7 @@ import { SagaOrchestrationMongoRepo } from './infrastrucutre/saga-orchestration.
 import { SagaOrchestrationService } from './application/saga-orchestration.service';
 
 const dependencies: Provider[] = [
+  SagaOrchestrationService,
   {
     provide: SAGA_ORCHESTRATION_REPOSITORY,
     useClass: SagaOrchestrationMongoRepo,
